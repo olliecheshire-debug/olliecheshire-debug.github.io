@@ -571,3 +571,118 @@ async function uploadImage(dataUrl) {
   }
   return false;
 }
+error);
+});
+}); }
+
+function ensureActive(run) { if (run.cancelled) { throw new Error("Solver cancelled."); } }
+
+async function clearActiveSiteData() { const tab = await getActiveTab(); await clearSiteDataForTab(tab); return Cookies and cache cleared for ${new URL(tab.url).hostname}.; }
+
+async function clearSiteDataForTab(tab) { if (tab.id === undefined || !tab.url) { throw new Error("The tab does not have a clearable site address."); } let url; try { url = new URL(tab.url); } catch { throw new Error("The active tab does not have a clearable site address."); } if (!["http:", "https:"].includes(url.protocol)) { throw new Error("Cookies and cache can only be cleared for a web page."); }
+
+await chrome.browsingData.remove( { origins: [url.origin] }, { cookies: true, cache: true } ); await chrome.tabs.reload(tab.id); }
+
+function queueCarouselAnswerCopy(tabId, expectedAnswerCount) { carouselAnswerQueue = carouselAnswerQueue .then(async () => { const run = { cancelled: false }; const answer = await waitForChatGptAnswer( tabId, run, expectedAnswerCount ); const [{ result: copied }] = await chrome.scripting.executeScript({ target: { tabId }, func: copyTextToClipboard, args: [answer] }); if (!copied) { throw new Error("ChatGPT answered, but the answer could not be copied."); } setStatus("OK", "ChatGPT answer copied to clipboard"); }) .catch((error) => { setStatus("ERR", error.message); console.error(error); }); }
+
+async function waitForChatGptAnswer(tabId, run, expectedAnswerCount) { let lastText = ""; let stableChecks = 0;
+
+for (let attempt = 0; attempt < 180; attempt += 1) { ensureActive(run); const [{ result: state }] = await chrome.scripting.executeScript({ target: { tabId }, func: getChatGptAnswerState }); if (state.count >= expectedAnswerCount && state.text && !state.generating) { if (state.text === lastText) { stableChecks += 1; } else { lastText = state.text; stableChecks = 0; } if (stableChecks >= 2) { return state.text; } } await new Promise((resolve) => setTimeout(resolve, 1000)); } throw new Error("No completed ChatGPT answer appeared before the 3-minute timeout."); }
+
+function setStatus(text, title) { chrome.action.setBadgeBackgroundColor({ color: text === "ERR" ? "#b42318" : "#188038" }); chrome.action.setBadgeText({ text }); chrome.action.setTitle({ title: title || "Homework Solver" }); setTimeout(() => chrome.action.setBadgeText({ text: "" }), 4000); }
+
+function pressEnterOnPage() { const target = document.activeElement || document.body || document.documentElement; if (!target) { return false; }
+
+for (const type of ["keydown", "keypress", "keyup"]) { target.dispatchEvent( new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }) ); } return true; }
+
+function getCarouselQuestion() { const selected = window.getSelection()?.toString().trim(); if (selected && selected.length >= 8) { return selected.slice(0, 20000); }
+
+const isVisible = (element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"; const getText = (element) => { const visibleText = element.innerText?.trim() || ""; const mathLabels = [ ...element.querySelectorAll("img[alt], svg[aria-label], [aria-label]") ] .map((child) => child.getAttribute("alt") || child.getAttribute("aria-label")) .filter(Boolean); return [visibleText, ...mathLabels] .filter(Boolean) .join("\n") .replace(/\n{3,}/g, "\n\n") .trim(); }; const questionNodes = [ ...document.querySelectorAll( '[data-testid*="question" i], [id*="question" i], [class*="question" i]' ) ].filter(isVisible); const usefulQuestionNodes = questionNodes .map((element) => ({ element, text: getText(element) })) .filter(({ text }) => text.length >= 12 && text.length <= 12000) .sort((a, b) => a.text.length - b.text.length); const mainNodes = [ ...document.querySelectorAll("main, [role='main'], article") ].filter(isVisible); const mainText = mainNodes .map(getText) .filter((text) => text.length >= 12 && text.length <= 20000) .sort((a, b) => b.length - a.length)[0]; const pageText = getText(document.body); const candidate = usefulQuestionNodes.find(({ element }) => element.querySelector('button, label, [role="radio"], input[type="radio"]') )?.text || usefulQuestionNodes.at(-1)?.text || mainText || pageText;
+
+return candidate .split(/\r?\n/) .map((line) => line.trim()) .filter((line) => line && !/^(?:next|previous|submit|check answer|show answer|skip|menu|settings)$/i.test(line) ) .join("\n") .slice(0, 20000); }
+
+function getChatGptAnswerState() { const messages = [ ...document.querySelectorAll('[data-message-author-role="assistant"]') ]; const latest = messages.at(-1); return { text: latest?.innerText?.trim() || "", count: messages.length, generating: Boolean( document.querySelector( 'button[data-testid="stop-button"], button[aria-label*="Stop generating" i]' ) ) }; }
+
+async function copyTextToClipboard(text) { try { await navigator.clipboard.writeText(text); return true; } catch { // Clipboard API access can vary between page contexts; try the legacy API. } const textarea = document.createElement("textarea"); textarea.value = text; textarea.setAttribute("readonly", ""); textarea.style.position = "fixed"; textarea.style.opacity = "0"; document.body.append(textarea); textarea.select(); const copied = document.execCommand("copy"); textarea.remove(); return copied; }
+
+async function submitText(text) { for (let attempt = 0; attempt < 30; attempt += 1) { const editor = document.querySelector('[contenteditable="true"][role="textbox"]') || document.querySelector('[contenteditable="true"]') || document.querySelector("textarea");
+
+if (editor && !editor.hasAttribute("disabled")) {
+  editor.focus();
+  if (editor instanceof HTMLTextAreaElement) {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set;
+    setter?.call(editor, text);
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  } else {
+    editor.replaceChildren(document.createTextNode(text));
+    editor.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: text
+      })
+    );
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const sendButton = document.querySelector(
+    'button[data-testid="send-button"]'
+  );
+  if (sendButton && !sendButton.disabled) {
+    sendButton.click();
+  } else {
+    editor.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true
+      })
+    );
+  }
+  return true;
+}
+await new Promise((resolve) => setTimeout(resolve, 500));
+} return false; }
+
+async function uploadImage(dataUrl) { for (let attempt = 0; attempt < 20; attempt += 1) { const input = [...document.querySelectorAll('input[type="file"]')].find( (candidate) => !candidate.disabled && (!candidate.accept || /image|*/i.test(candidate.accept)) );
+
+if (input) {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const file = new File([blob], "sparx-question.png", {
+    type: "image/png"
+  });
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const isVisible = (element) =>
+    element.getClientRects().length > 0 &&
+    getComputedStyle(element).visibility !== "hidden";
+  const actionButtons = [
+    ...document.querySelectorAll(
+      'button, [role="button"], input[type="submit"]'
+    )
+  ].filter((button) => {
+    const label = [
+      button.innerText,
+      button.getAttribute("aria-label"),
+      button.getAttribute("title"),
+      button.getAttribute("value")
+    ].filter(Boolean).join(" ").toLowerCase();
+    return isVisible(button) &&
+      !button.disabled &&
+      button.getAttribute("aria-disabled") !== "true" &&
+      /\b(solve|submit|send|ask|get answer)\b/.test(label);
+  });
+  if (actionButtons.length === 1) {
+    actionButtons[0].click();
+  }
+  return true;
+}
+await new Promise((resolve) => setTimeout(resolve, 500));
